@@ -70,6 +70,10 @@ alpm_handle_t SYMEXPORT *alpm_initialize(const char *root, const char *dbpath,
 		goto cleanup;
 	}
 
+#ifdef HAVE_LIBCURL
+	curl_global_init(CURL_GLOBAL_ALL);
+#endif
+
 #ifdef ENABLE_NLS
 	bindtextdomain("libalpm", LOCALEDIR);
 #endif
