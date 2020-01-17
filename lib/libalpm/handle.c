@@ -44,6 +44,9 @@ alpm_handle_t *_alpm_handle_new(void)
 
 	CALLOC(handle, 1, sizeof(alpm_handle_t), return NULL);
 	handle->lockfd = -1;
+#ifdef HAVE_LIBCURL
+	handle->curlm = curl_multi_init();
+#endif
 
 	return handle;
 }
@@ -63,6 +66,10 @@ void _alpm_handle_free(alpm_handle_t *handle)
 		handle->usesyslog = 0;
 		closelog();
 	}
+
+#ifdef HAVE_LIBCURL
+	curl_multi_cleanup(handle->curlm);
+#endif
 
 #ifdef HAVE_LIBGPGME
 	FREELIST(handle->known_keys);

@@ -58,6 +58,8 @@ struct __alpm_handle_t {
 	alpm_trans_t *trans;
 
 #ifdef HAVE_LIBCURL
+	/* libcurl handle */
+	CURLM *curlm;
 	unsigned short disable_dl_timeout;
 #endif
 
