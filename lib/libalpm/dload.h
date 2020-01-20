@@ -31,7 +31,6 @@ struct dload_payload {
 	char *destfile_name;
 	char *content_disp_name;
 	char *fileurl;
-	alpm_list_t *servers;
 	long respcode;
 	off_t initial_size;
 	off_t max_size;

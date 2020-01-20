@@ -693,19 +693,7 @@ static int prompt_to_delete(alpm_handle_t *handle, const char *filepath,
 	return question.remove;
 }
 
-static struct dload_payload *build_payload(alpm_handle_t *handle,
-		const char *filename, size_t size, alpm_list_t *servers)
-{
-		struct dload_payload *payload;
-
-		CALLOC(payload, 1, sizeof(*payload), RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
-		STRDUP(payload->remote_name, filename, FREE(payload); RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
-		payload->max_size = size;
-		payload->servers = servers;
-		return payload;
-}
-
-static int find_dl_candidates(alpm_handle_t *handle, alpm_list_t **files)
+static int find_dl_candidates(alpm_handle_t *handle, alpm_list_t **pkgs)
 {
 	for(alpm_list_t *i = handle->trans->add; i; i = i->next) {
 		alpm_pkg_t *spkg = i->data;
@@ -728,12 +716,8 @@ static int find_dl_candidates(alpm_handle_t *handle, alpm_list_t **files)
 				fpath = _alpm_filecache_find(handle, spkg->filename);
 			}
 
-			if(spkg->download_size != 0 || !fpath) {
-				struct dload_payload *payload;
-				payload = build_payload(handle, spkg->filename, spkg->size, repo->servers);
-				ASSERT(payload, return -1);
-				*files = alpm_list_add(*files, payload);
-			}
+			if(spkg->download_size != 0 || !fpath)
+				*pkgs = alpm_list_add(*pkgs, spkg);
 
 			FREE(fpath);
 		}
@@ -743,7 +727,7 @@ static int find_dl_candidates(alpm_handle_t *handle, alpm_list_t **files)
 }
 
 static int download_single_file(alpm_handle_t *handle, struct dload_payload *payload,
-		const char *cachedir)
+		const char *cachedir, alpm_list_t *servers)
 {
 	alpm_event_pkgdownload_t event = {
 		.type = ALPM_EVENT_PKGDOWNLOAD_START,
@@ -755,7 +739,7 @@ static int download_single_file(alpm_handle_t *handle, struct dload_payload *pay
 	payload->allow_resume = 1;
 
 	EVENT(handle, &event);
-	for(server = payload->servers; server; server = server->next) {
+	for(server = servers; server; server = server->next) {
 		const char *server_url = server->data;
 		size_t len;
 
@@ -780,7 +764,7 @@ static int download_single_file(alpm_handle_t *handle, struct dload_payload *pay
 static int download_files(alpm_handle_t *handle)
 {
 	const char *cachedir;
-	alpm_list_t *i, *files = NULL;
+	alpm_list_t *i, *pkgs = NULL;
 	int errors = 0;
 	alpm_event_t event;
 
@@ -800,27 +784,27 @@ static int download_files(alpm_handle_t *handle)
 		handle->totaldlcb(total_size);
 	}
 
-	errors += find_dl_candidates(handle, &files);
+	errors += find_dl_candidates(handle, &pkgs);
 
-	if(files) {
+	if(pkgs) {
 		/* check for necessary disk space for download */
 		if(handle->checkspace) {
-			off_t *file_sizes;
+			off_t *pkg_sizes;
 			size_t idx, num_files;
 			int ret;
 
 			_alpm_log(handle, ALPM_LOG_DEBUG, "checking available disk space for download\n");
 
-			num_files = alpm_list_count(files);
-			CALLOC(file_sizes, num_files, sizeof(off_t), goto finish);
+			num_files = alpm_list_count(pkgs);
+			CALLOC(pkg_sizes, num_files, sizeof(off_t), goto finish);
 
-			for(i = files, idx = 0; i; i = i->next, idx++) {
-				const struct dload_payload *payload = i->data;
-				file_sizes[idx] = payload->max_size;
+			for(i = pkgs, idx = 0; i; i = i->next, idx++) {
+				const alpm_pkg_t *pkg = i->data;
+				pkg_sizes[idx] = pkg->size;
 			}
 
-			ret = _alpm_check_downloadspace(handle, cachedir, num_files, file_sizes);
-			free(file_sizes);
+			ret = _alpm_check_downloadspace(handle, cachedir, num_files, pkg_sizes);
+			free(pkg_sizes);
 
 			if(ret != 0) {
 				errors++;
@@ -831,21 +815,27 @@ static int download_files(alpm_handle_t *handle)
 		event.type = ALPM_EVENT_RETRIEVE_START;
 		EVENT(handle, &event);
 		event.type = ALPM_EVENT_RETRIEVE_DONE;
-		for(i = files; i; i = i->next) {
-			if(download_single_file(handle, i->data, cachedir) == -1) {
+		for(i = pkgs; i; i = i->next) {
+			const alpm_pkg_t *pkg = i->data;
+			alpm_list_t *servers = pkg->origin_data.db->servers;
+			struct dload_payload payload = {0};
+
+			STRDUP(payload.remote_name, pkg->filename, handle->pm_errno = ALPM_ERR_MEMORY; goto finish);
+			payload.max_size = pkg->size;
+
+			if(download_single_file(handle, &payload, cachedir, servers) == -1) {
 				errors++;
 				event.type = ALPM_EVENT_RETRIEVE_FAILED;
 				_alpm_log(handle, ALPM_LOG_WARNING, _("failed to retrieve some files\n"));
 			}
+			_alpm_dload_payload_reset(&payload);
 		}
 		EVENT(handle, &event);
 	}
 
 finish:
-	if(files) {
-		alpm_list_free_inner(files, (alpm_list_fn_free)_alpm_dload_payload_reset);
-		FREELIST(files);
-	}
+	if(pkgs)
+		alpm_list_free(pkgs);
 
 	for(i = handle->trans->add; i; i = i->next) {
 		alpm_pkg_t *pkg = i->data;
