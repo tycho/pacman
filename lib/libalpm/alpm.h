@@ -1040,6 +1040,10 @@ int alpm_db_remove_server(alpm_db_t *db, const char *url);
  */
 int alpm_db_update(int force, alpm_db_t *db);
 
+/** Database update completion callback */
+typedef void (*alpm_cb_dbupdate)(alpm_db_t *db, int ret);
+int alpm_dbs_update(alpm_handle_t *handle, alpm_list_t *dbs, int force, int failfast, alpm_cb_dbupdate cb);
+
 /** Get a package entry from a package database.
  * @param db pointer to the package database to get the package from
  * @param name of the package

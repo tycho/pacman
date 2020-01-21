@@ -30,7 +30,10 @@ struct dload_payload {
 	char *tempfile_name;
 	char *destfile_name;
 	char *content_disp_name;
-	char *fileurl;
+	alpm_list_t *server;   /* iterator to servers to download the data from */
+	char *fileurl; /* server + path, it is used in non-multicurl solution. It need to be removed once we have mcurl ready */
+	char *filepath; /* filepath. server + filepath represents fileurl */
+	int retcode; /* curl return code */
 	long respcode;
 	off_t initial_size;
 	off_t max_size;
@@ -43,6 +46,8 @@ struct dload_payload {
 	int cb_initialized;
 #ifdef HAVE_LIBCURL
 	CURL *curl;
+	char error_buffer[CURL_ERROR_SIZE];
+	FILE *localf; /* temp download file */
 #endif
 };
 
@@ -51,5 +56,9 @@ void _alpm_dload_payload_reset_for_retry(struct dload_payload *payload);
 
 int _alpm_download(struct dload_payload *payload, const char *localpath,
 		char **final_file, const char **final_url);
+
+int _alpm_multi_download(alpm_handle_t *handle,
+		alpm_list_t *payloads /* struct dload_payload */,
+		const char *localpath);
 
 #endif /* ALPM_DLOAD_H */

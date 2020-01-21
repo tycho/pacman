@@ -301,6 +301,158 @@ int SYMEXPORT alpm_db_update(int force, alpm_db_t *db)
 	return ret;
 }
 
+/** Update list of databases. This function may run updates in parallel.
+ *
+ * @param dbs a list of alpm_db_t to update.
+ */
+int SYMEXPORT alpm_dbs_update(alpm_handle_t *handle, alpm_list_t *dbs, int force, UNUSED int failfast, alpm_cb_dbupdate cb) {
+	char *syncpath;
+	const char *dbext = handle->dbext;
+	alpm_list_t *i, *j;
+	int ret = -1;
+	mode_t oldmask;
+	alpm_list_t *payloads = NULL;
+
+	/* Sanity checks */
+	ASSERT(dbs != NULL, return -1);
+	handle->pm_errno = ALPM_ERR_OK;
+
+	syncpath = get_sync_dir(handle);
+	if(!syncpath) {
+		return -1;
+	}
+
+	/* make sure we have a sane umask */
+	oldmask = umask(0022);
+
+	for(i = dbs; i; i = i->next) {
+		alpm_db_t *db = i->data;
+		int dbforce = force;
+		struct dload_payload *payload = NULL;
+		size_t len;
+		int siglevel;
+
+		if(!(db->usage & ALPM_DB_USAGE_SYNC)) {
+			continue;
+		}
+
+		ASSERT(db != handle->db_local, RET_ERR(handle, ALPM_ERR_WRONG_ARGS, -1));
+		ASSERT(db->servers != NULL, RET_ERR(handle, ALPM_ERR_SERVER_NONE, -1));
+
+		/* force update of invalid databases to fix potential mismatched database/signature */
+		if(db->status & DB_STATUS_INVALID) {
+			dbforce = 1;
+		}
+
+		CALLOC(payload, 1, sizeof(*payload), RET_ERR(handle, ALPM_ERR_MEMORY, -1));
+
+		/* set hard upper limit of 128MiB */
+		payload->max_size = 128 * 1024 * 1024;
+		ASSERT(db->servers != NULL, RET_ERR(handle, ALPM_ERR_SERVER_NONE, -1));
+		payload->server = db->servers;
+
+		/* print server + filename into a buffer */
+		len = strlen(db->treename) + strlen(dbext) + 1;
+		MALLOC(payload->filepath, len, goto cleanup);
+		snprintf(payload->filepath, len, "%s%s", db->treename, dbext);
+		payload->handle = handle;
+		payload->force = dbforce;
+		payload->unlink_on_fail = 1;
+
+		payloads = alpm_list_add(payloads, payload);
+
+		siglevel = alpm_db_get_siglevel(db);
+		if(siglevel & ALPM_SIG_DATABASE) {
+			struct dload_payload *sig_payload;
+			CALLOC(sig_payload, 1, sizeof(*sig_payload), RET_ERR(handle, ALPM_ERR_MEMORY, -1));
+
+			/* print filename into a buffer (leave space for separator and .sig) */
+			len = strlen(db->treename) + strlen(dbext) + 5;
+			MALLOC(sig_payload->filepath, len, goto cleanup);
+			snprintf(sig_payload->filepath, len, "%s%s.sig", db->treename, dbext);
+
+			sig_payload->handle = handle;
+			sig_payload->force = dbforce;
+			sig_payload->errors_ok = (siglevel & ALPM_SIG_DATABASE_OPTIONAL);
+
+			/* set hard upper limit of 16KiB */
+			sig_payload->max_size = 16 * 1024;
+			sig_payload->server = db->servers;
+
+			payloads = alpm_list_add(payloads, sig_payload);
+		}
+	}
+
+	/* attempt to grab a lock */
+	if(_alpm_handle_lock(handle)) {
+		free(syncpath);
+		umask(oldmask);
+		RET_ERR(handle, ALPM_ERR_HANDLE_LOCK, -1);
+	}
+
+	ret = _alpm_multi_download(handle, payloads, syncpath);
+
+	j = payloads;
+	for(i = dbs; i; i = i->next) {
+		struct dload_payload *p;
+		int siglevel;
+		int sigexists = 0;
+
+		alpm_db_t *db = i->data;
+		if(!(db->usage & ALPM_DB_USAGE_SYNC)) {
+			continue;
+		}
+
+		p = j->data;
+		j = j->next;
+
+		siglevel = alpm_db_get_siglevel(db);
+		sigexists = (siglevel & ALPM_SIG_DATABASE); /* calculate whether we download sig file as well */
+		if(sigexists) {
+			/* in case if database uses signatures we have another payload */
+			j = j->next;
+		}
+
+		if(p->retcode == 0) {
+			/* Cache needs to be rebuilt */
+			_alpm_db_free_pkgcache(db);
+
+			/* clear all status flags regarding validity/existence */
+			db->status &= ~DB_STATUS_VALID;
+			db->status &= ~DB_STATUS_INVALID;
+			db->status &= ~DB_STATUS_EXISTS;
+			db->status &= ~DB_STATUS_MISSING;
+
+			/* if the download failed skip validation to preserve the download error */
+			if(p->retcode != -1 && sync_db_validate(db) != 0) {
+				/* pm_errno should be set */
+				ret = -1;
+			}
+		}
+
+		cb(db, p->retcode);
+	}
+
+cleanup:
+	_alpm_handle_unlock(handle);
+
+	if(ret == -1) {
+		/* pm_errno was set by the download code */
+		_alpm_log(handle, ALPM_LOG_DEBUG, "failed to sync dbs: %s\n",
+				alpm_strerror(handle->pm_errno));
+	} else {
+		handle->pm_errno = ALPM_ERR_OK;
+	}
+
+	if(payloads) {
+		alpm_list_free_inner(payloads, (alpm_list_fn_free)_alpm_dload_payload_reset);
+		FREELIST(payloads);
+	}
+	free(syncpath);
+	umask(oldmask);
+	return ret;
+}
+
 /* Forward decl so I don't reorganize the whole file right now */
 static int sync_db_read(alpm_db_t *db, struct archive *archive,
 		struct archive_entry *entry, alpm_pkg_t **likely_pkg);
