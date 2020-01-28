@@ -603,6 +603,38 @@ cleanup:
 	return ret;
 }
 
+/* Return 0 if retry was sucessfull, -1 otherwise */
+static int curl_multi_retry_next_server(CURLM *curlm, CURL *curl, struct dload_payload *payload) {
+	const char *server;
+	size_t len;
+	alpm_handle_t *handle = payload->handle;
+
+	payload->server = payload->server->next;
+	if(!payload->server) {
+		return -1;
+	}
+	server = payload->server->data;
+
+	/* regenerate a new fileurl */
+	free(payload->fileurl);
+	len = strlen(server) + strlen(payload->filepath) + 2;
+	MALLOC(payload->fileurl, len, RET_ERR(handle, ALPM_ERR_MEMORY, -1));
+	snprintf(payload->fileurl, len, "%s/%s", server, payload->filepath);
+
+	if(payload->unlink_on_fail) {
+		/* we keep the file for a new retry but remove its data if any */
+		truncate(payload->tempfile_name, 0);
+	}
+
+	/* Set curl with the new URL */
+	curl_easy_setopt(curl, CURLOPT_URL, payload->fileurl);
+
+	curl_multi_remove_handle(curlm, curl);
+	curl_multi_add_handle(curlm, curl);
+
+	return 0;
+}
+
 static void curl_multi_handle_single_done(CURLM *curlm, CURLMsg *msg, const char *localpath) {
 	alpm_handle_t *handle = NULL;
 	struct dload_payload *payload = NULL;
@@ -631,12 +663,6 @@ static void curl_multi_handle_single_done(CURLM *curlm, CURLMsg *msg, const char
 	_alpm_log(handle, ALPM_LOG_DEBUG, "curl returned error %d from transfer\n",
 			curlerr);
 
-	/* disconnect relationships from the curl handle for things that might go out
-	 * of scope, but could still be touched on connection teardown. This really
-	 * only applies to FTP transfers. */
-	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
-	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, (char *)NULL);
-
 	/* was it a success? */
 	switch(curlerr) {
 		case CURLE_OK:
@@ -653,7 +679,11 @@ static void curl_multi_handle_single_done(CURLM *curlm, CURLMsg *msg, const char
 							_("failed retrieving file '%s' from %s : %s\n"),
 							payload->remote_name, hostname, payload->error_buffer);
 				}
-				goto cleanup;
+				if(curl_multi_retry_next_server(curlm, curl, payload) == 0) {
+					return;
+				} else {
+					goto cleanup;
+				}
 			}
 			break;
 		case CURLE_ABORTED_BY_CALLBACK:
@@ -673,7 +703,11 @@ static void curl_multi_handle_single_done(CURLM *curlm, CURLMsg *msg, const char
 			_alpm_log(handle, ALPM_LOG_ERROR,
 					_("failed retrieving file '%s' from %s : %s\n"),
 					payload->remote_name, hostname, payload->error_buffer);
-			goto cleanup;
+			if(curl_multi_retry_next_server(curlm, curl, payload) == 0) {
+				return;
+			} else {
+				goto cleanup;
+			}
 		default:
 			/* delete zero length downloads */
 			if(fstat(fileno(payload->localf), &st) == 0 && st.st_size == 0) {
@@ -689,7 +723,11 @@ static void curl_multi_handle_single_done(CURLM *curlm, CURLMsg *msg, const char
 						"failed retrieving file '%s' from %s : %s\n",
 						payload->remote_name, hostname, payload->error_buffer);
 			}
-			goto cleanup;
+			if(curl_multi_retry_next_server(curlm, curl, payload) == 0) {
+				return;
+			} else {
+				goto cleanup;
+			}
 	}
 
 	/* retrieve info about the state of the transfer */
@@ -746,6 +784,12 @@ static void curl_multi_handle_single_done(CURLM *curlm, CURLMsg *msg, const char
 	ret = 0;
 
 cleanup:
+	/* disconnect relationships from the curl handle for things that might go out
+	 * of scope, but could still be touched on connection teardown. This really
+	 * only applies to FTP transfers. */
+	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, (char *)NULL);
+
 	if(payload->localf != NULL) {
 		fclose(payload->localf);
 		utimes_long(payload->tempfile_name, remote_time);
@@ -840,10 +884,6 @@ static int curl_multi_download_internal(alpm_handle_t *handle,
 			}
 		}
 
-		/* We need payload->fileurl only for this function
-		 * TODO: convert it to a local variable and remove from
-		 * `payload` structure
-		 */
 		curl_set_handle_opts(payload, curl, payload->error_buffer);
 
 		if(payload->max_size == payload->initial_size) {
@@ -897,7 +937,7 @@ static int curl_multi_download_internal(alpm_handle_t *handle,
 	} while(still_running);
 
 cleanup:
-	/* TODO: cleanup all easy handles */
+	/* TODO: In case of failfast we need to drop all the current easy_curl handlers */
 
 	return ret;
 }
