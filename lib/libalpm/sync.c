@@ -726,47 +726,13 @@ static int find_dl_candidates(alpm_handle_t *handle, alpm_list_t **pkgs)
 	return 0;
 }
 
-static int download_single_file(alpm_handle_t *handle, struct dload_payload *payload,
-		const char *cachedir, alpm_list_t *servers)
-{
-	alpm_event_pkgdownload_t event = {
-		.type = ALPM_EVENT_PKGDOWNLOAD_START,
-		.file = payload->remote_name
-	};
-	const alpm_list_t *server;
-
-	payload->handle = handle;
-	payload->allow_resume = 1;
-
-	EVENT(handle, &event);
-	for(server = servers; server; server = server->next) {
-		const char *server_url = server->data;
-		size_t len;
-
-		/* print server + filename into a buffer */
-		len = strlen(server_url) + strlen(payload->remote_name) + 2;
-		MALLOC(payload->fileurl, len, RET_ERR(handle, ALPM_ERR_MEMORY, -1));
-		snprintf(payload->fileurl, len, "%s/%s", server_url, payload->remote_name);
-
-		if(_alpm_download(payload, cachedir, NULL, NULL) != -1) {
-			event.type = ALPM_EVENT_PKGDOWNLOAD_DONE;
-			EVENT(handle, &event);
-			return 0;
-		}
-		_alpm_dload_payload_reset_for_retry(payload);
-	}
-
-	event.type = ALPM_EVENT_PKGDOWNLOAD_FAILED;
-	EVENT(handle, &event);
-	return -1;
-}
-
 static int download_files(alpm_handle_t *handle)
 {
 	const char *cachedir;
 	alpm_list_t *i, *pkgs = NULL;
 	int errors = 0;
 	alpm_event_t event;
+	alpm_list_t *payloads = NULL;
 
 	cachedir = _alpm_filecache_setup(handle);
 	handle->trans->state = STATE_DOWNLOADING;
@@ -814,26 +780,41 @@ static int download_files(alpm_handle_t *handle)
 
 		event.type = ALPM_EVENT_RETRIEVE_START;
 		EVENT(handle, &event);
-		event.type = ALPM_EVENT_RETRIEVE_DONE;
 		for(i = pkgs; i; i = i->next) {
 			const alpm_pkg_t *pkg = i->data;
-			alpm_list_t *servers = pkg->origin_data.db->servers;
-			struct dload_payload payload = {0};
+			struct dload_payload *payload = NULL;
 
-			STRDUP(payload.remote_name, pkg->filename, handle->pm_errno = ALPM_ERR_MEMORY; goto finish);
-			payload.max_size = pkg->size;
+			CALLOC(payload, 1, sizeof(*payload), handle->pm_errno = ALPM_ERR_MEMORY; goto finish);
 
-			if(download_single_file(handle, &payload, cachedir, servers) == -1) {
-				errors++;
-				event.type = ALPM_EVENT_RETRIEVE_FAILED;
-				_alpm_log(handle, ALPM_LOG_WARNING, _("failed to retrieve some files\n"));
-			}
-			_alpm_dload_payload_reset(&payload);
+			STRDUP(payload->remote_name, pkg->filename, handle->pm_errno = ALPM_ERR_MEMORY; goto finish);
+			STRDUP(payload->filepath, pkg->filename, handle->pm_errno = ALPM_ERR_MEMORY; goto finish);
+			payload->max_size = pkg->size;
+			payload->server = pkg->origin_data.db->servers;
+			payload->handle = handle;
+			payload->allow_resume = 1;
+
+			payloads = alpm_list_add(payloads, payload);
+
+			/* TODO: do we need to initiate *.sig file download here? */
+		}
+		/* TOTHINK: sequential download code also reported ALPM_EVENT_PKGDOWNLOAD_START/DONE/FAILED 
+		 * does it make sense to report it here? Or it should be reported inside alpm_multi_* function
+		 */
+		event.type = ALPM_EVENT_RETRIEVE_DONE;
+		if(_alpm_multi_download(handle, payloads, cachedir) == -1) {
+			errors++;
+			event.type = ALPM_EVENT_RETRIEVE_FAILED;
+			_alpm_log(handle, ALPM_LOG_WARNING, _("failed to retrieve some files\n"));
 		}
 		EVENT(handle, &event);
 	}
 
 finish:
+	if(payloads) {
+		alpm_list_free_inner(payloads, (alpm_list_fn_free)_alpm_dload_payload_reset);
+		FREELIST(payloads);
+	}
+
 	if(pkgs)
 		alpm_list_free(pkgs);
 
