@@ -162,6 +162,7 @@ int sync_syncdbs(int level, alpm_list_t *syncs)
 	int ret;
 	int force = (level < 2 ? 0 : 1);
 
+	multibar_move_complete_top = 0;
 	ret = alpm_dbs_update(config->handle, syncs, force, 1, alpm_db_updatecb);
 	if(ret < 0) {
 		pm_printf(ALPM_LOG_ERROR, _("failed to synchronize all databases (%s)\n"),

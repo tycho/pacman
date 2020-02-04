@@ -43,4 +43,7 @@ void cb_dl_progress(const char *filename, off_t file_xfered, off_t file_total);
 __attribute__((format(printf, 2, 0)))
 void cb_log(alpm_loglevel_t level, const char *fmt, va_list args);
 
+/* specify if multibar should move complete bars to the top of the screen */
+int multibar_move_complete_top;
+
 #endif /* PM_CALLBACK_H */
