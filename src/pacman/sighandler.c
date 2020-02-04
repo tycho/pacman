@@ -27,6 +27,9 @@
 #include "sighandler.h"
 #include "util.h"
 
+/* the same ANSI sequence as used in console_show_cursor */
+#define SHOW_CURSOR_ANSI "\e[?25h"
+
 /** Write function that correctly handles EINTR.
  */
 static ssize_t xwrite(int fd, const void *buf, size_t count)
@@ -60,6 +63,7 @@ static void soft_interrupt_handler(int signum)
 		const char msg[] = "\nHangup signal received\n";
 		xwrite(STDERR_FILENO, msg, ARRAYSIZE(msg) - 1);
 	}
+	xwrite(STDOUT_FILENO, SHOW_CURSOR_ANSI, sizeof(SHOW_CURSOR_ANSI) - 1);
 	if(alpm_trans_interrupt(config->handle) == 0) {
 		/* a transaction is being interrupted, don't exit pacman yet. */
 		return;
@@ -95,6 +99,7 @@ static void segv_handler(int signum)
 	const char msg[] = "\nerror: segmentation fault\n"
 		"Please submit a full bug report with --debug if appropriate.\n";
 	xwrite(STDERR_FILENO, msg, sizeof(msg) - 1);
+	xwrite(STDOUT_FILENO, SHOW_CURSOR_ANSI, sizeof(SHOW_CURSOR_ANSI) - 1);
 
 	/* restore the default handler */
 	_reset_handler(signum);

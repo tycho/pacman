@@ -28,6 +28,9 @@ char *mdirname(const char *path);
 
 int llstat(char *path, struct stat *buf);
 
+void console_hide_cursor(void);
+void console_show_cursor(void);
+
 char *safe_fgets(char *s, int size, FILE *stream);
 
 void wordsplit_free(char **ws);

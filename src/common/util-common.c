@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "util-common.h"
 
@@ -104,6 +105,18 @@ int llstat(char *path, struct stat *buf)
 	return ret;
 }
 
+void console_hide_cursor(void) {
+	if(isatty(fileno(stdout))) {
+		printf("\e[?25l");
+	}
+}
+
+void console_show_cursor(void) {
+	if(isatty(fileno(stdout))) {
+		printf("\e[?25h");
+	}
+}
+
 /** Wrapper around fgets() which properly handles EINTR
  * @param s string to read into
  * @param size maximum length to read
@@ -114,6 +127,7 @@ char *safe_fgets(char *s, int size, FILE *stream)
 {
 	char *ret;
 	int errno_save = errno, ferror_save = ferror(stream);
+	console_show_cursor();
 	while((ret = fgets(s, size, stream)) == NULL && !feof(stream)) {
 		if(errno == EINTR) {
 			/* clear any errors we set and try again */
@@ -125,6 +139,7 @@ char *safe_fgets(char *s, int size, FILE *stream)
 			break;
 		}
 	}
+	console_hide_cursor();
 	return ret;
 }
 
